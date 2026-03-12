@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='UTF-8'>
+  <title>Network Monitor</title>
+  <script src='https://cdn.jsdelivr.net/npm/chart.js'></script>
+  <style>
+    * { 
+      box-sizing: border-box; 
+      margin: 0; 
+      padding: 0; 
+    }
+    
+    body { 
+      font-family: 'Segoe UI', system-ui, sans-serif; 
+      background: #121212; /* Black background */
+      color: #ffffff; /* White text */
+      height: 100vh; 
+      display: flex; 
+      flex-direction: column; 
+      padding: 24px; 
+      overflow: hidden; /* Prevents scrolling */
+    }
+
+    h1 { 
+      font-size: 1.4rem;
+      font-weight: 500;
+      color: #ffffff; 
+      margin-bottom: 24px; 
+      border-bottom: 1px solid #333;
+      padding-bottom: 12px;
+    }
+
+    /* KPI Cards */
+    .cards { 
+      display: grid; 
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); 
+      gap: 16px; 
+      margin-bottom: 24px; 
+    }
+    
+    .card { 
+      background: #1a1a1a; 
+      border: 1px solid #2a2a2a;
+      border-radius: 8px; 
+      padding: 20px; 
+      text-align: center;
+    }
+    
+    .card h3 { 
+      color: #888888; 
+      font-size: 11px; 
+      text-transform: uppercase; 
+      letter-spacing: 0.05em;
+      margin-bottom: 8px; 
+    }
+    
+    .card p { 
+      font-size: 24px; 
+      font-weight: bold; 
+    }
+
+    /* Specific Metric Colors */
+    #cur-lat, #avg-lat { color: #ffffff; } /* White */
+    #worst-lat, #pkt-loss { color: #ef4444; } /* Red */
+    #dl { color: #22c55e; } /* Green */
+    #ul { color: #3b82f6; } /* Blue */
+
+    /* Chart Containers */
+    .charts-container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      flex-grow: 1; /* Takes up remaining height */
+      min-height: 0;
+    }
+
+    .wrap { 
+      background: #1a1a1a; 
+      border: 1px solid #2a2a2a;
+      border-radius: 8px; 
+      padding: 20px; 
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .wrap h2 { 
+      color: #ffffff; 
+      font-size: 13px; 
+      margin-bottom: 16px; 
+      text-transform: uppercase; 
+      letter-spacing: 0.05em;
+    }
+
+    .canvas-box {
+      position: relative;
+      flex-grow: 1;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <h1>Live Network Monitor Dashboard</h1>
+  
+  <div class='cards'>
+    <div class='card'><h3>Current Latency</h3><p id='cur-lat'>--</p></div>
+    <div class='card'><h3>Avg Latency (1hr)</h3><p id='avg-lat'>--</p></div>
+    <div class='card'><h3>Worst Latency</h3><p id='worst-lat'>--</p></div>
+    <div class='card'><h3>Packet Loss</h3><p id='pkt-loss'>--</p></div>
+    <div class='card'><h3>Download</h3><p id='dl'>--</p></div>
+    <div class='card'><h3>Upload</h3><p id='ul'>--</p></div>
+  </div>
+
+  <div class="charts-container">
+    <div class='wrap'>
+      <h2>Latency Over Time (ms)</h2>
+      <div class="canvas-box">
+        <canvas id='latChart'></canvas>
+      </div>
+    </div>
+    <div class='wrap'>
+      <h2>Speed Over Time (Mbps)</h2>
+      <div class="canvas-box">
+        <canvas id='spdChart'></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  const mk = (id, sets) => new Chart(document.getElementById(id), {
+    type: 'line',
+    data: { labels: [], datasets: sets.map(s => ({
+      ...s, fill: false, tension: 0.3, pointRadius: 2, borderWidth: 2,
+      spanGaps: true
+    }))},
+    options: {
+      animation: false, 
+      responsive: true,
+      maintainAspectRatio: false, // Allows charts to fill their parent container height
+      plugins: { legend: { labels: { color: '#aaaaaa', font: { size: 11 } } } },
+      scales: {
+        x: { ticks: { color: '#888888', font: { size: 10 } }, grid: { color: '#2a2a2a' }},
+        y: { ticks: { color: '#888888', font: { size: 10 } }, grid: { color: '#2a2a2a' }, beginAtZero: true }
+      }
+    }
+  });
+
+  const lc = mk('latChart', [{label:'Latency (ms)', data:[], borderColor:'#ffffff'}]); // White line
+  const sc = mk('spdChart', [
+    {label:'Download (Mbps)', data:[], borderColor:'#22c55e'}, // Green line
+    {label:'Upload (Mbps)',   data:[], borderColor:'#3b82f6'}  // Blue line
+  ]);
+
+  function clean(val) {
+    if (val === null || val === undefined || val === 'null' || val === '' || isNaN(Number(val))) return null;
+    return Number(val);
+  }
+
+  async function load() {
+    try {
+      const d = await fetch('/api/data').then(r => r.json());
+      if (!d.length) return;
+
+      const labels = d.map(r => r.timestamp.slice(11, 19));
+
+      lc.data.labels = labels;
+      lc.data.datasets[0].data = d.map(r => clean(r.latency_ms));
+      lc.update();
+
+      sc.data.labels = labels;
+      sc.data.datasets[0].data = d.map(r => clean(r.download_mbps));
+      sc.data.datasets[1].data = d.map(r => clean(r.upload_mbps));
+      sc.update();
+
+      const last = d[d.length - 1];
+
+      // Current latency
+      const curLat = clean(last.latency_ms);
+      document.getElementById('cur-lat').textContent = curLat !== null ? curLat + ' ms' : '--';
+
+      // Packet loss
+      const pkt = clean(last.packet_loss_pct);
+      document.getElementById('pkt-loss').textContent = pkt !== null ? pkt + '%' : '0%';
+
+      // Download / upload
+      const dl = clean(last.download_mbps);
+      const ul = clean(last.upload_mbps);
+      document.getElementById('dl').textContent = dl !== null ? dl + ' Mbps' : '--';
+      document.getElementById('ul').textContent = ul !== null ? ul + ' Mbps' : '--';
+
+      // Avg and worst — only use valid latency numbers
+      const recent = d.slice(-6).map(r => clean(r.latency_ms)).filter(v => v !== null);
+      if (recent.length > 0) {
+        const avg = (recent.reduce((a, b) => a + b, 0) / recent.length).toFixed(1);
+        const worst = Math.max(...recent).toFixed(1);
+        document.getElementById('avg-lat').textContent   = avg + ' ms';
+        document.getElementById('worst-lat').textContent = worst + ' ms';
+      } else {
+        document.getElementById('avg-lat').textContent   = '--';
+        document.getElementById('worst-lat').textContent = '--';
+      }
+    } catch (e) {
+      console.error("Failed to load data", e);
+    }
+  }
+
+  load();
+  setInterval(load, 30000);
+  </script>
+</body>
+</html>
